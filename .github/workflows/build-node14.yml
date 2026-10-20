@@ -1,37 +1,46 @@
-name: Build Node 14 for Darwin ARM64
+name: Force Compile Node 14 for Darwin ARM64
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 支持手动触发
 
 jobs:
   build:
-    runs-on: macos-14 # 使用 macOS ARM64 虚拟机
+    runs-on: macos-14 # 使用 GitHub 托管的 Apple Silicon M1 虚拟机环境
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Environment & Download Node.js v14 Source
+      - name: Download & Patch Node.js v14 Source
         run: |
           NODE_VERSION="v14.21.3"
-          echo "Downloading Node.js $NODE_VERSION..."
+          echo "Downloading Node.js $NODE_VERSION source..."
           curl -O https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION.tar.gz
           tar -xzf node-$NODE_VERSION.tar.gz
+          cd node-$NODE_VERSION
+          
+          echo "Applying patches for macOS ARM64 support..."
+          # 1. 修改 configure 脚本：允许在 macOS 平台放行 arm64 架构
+          sed -i.bak "s/'ia32', 'x64'/'ia32', 'x64', 'arm64'/g" configure
+          
+          # 2. 兼容性微调：防止旧版 V8 源码在现代 macOS SDK 中因头文件不匹配报错
+          # 如果遇到某些 gypi 架构判断问题，在这里一并处理
 
       - name: Configure Node.js
         run: |
           cd node-v14.21.3
-          # 使用原生 arm64 配置，并关闭 npm（减少不必要的编译耗时和潜在错误）
+          # 显式指定目标架构为 arm64，不编译内置老旧 npm（可自行后续通过 corepack 或 npm 升级）
           ./configure --dest-cpu=arm64 --without-npm
 
-      - name: Build Node.js (Make with Compatibility Flags)
+      - name: Build Node.js (Make with Strict Flags Bypassed)
         run: |
           cd node-v14.21.3
-          # 核心修复：
-          # 1. CXXFLAGS="-Wno-error" 阻止 Clang 把古老代码的警告判为死刑
-          # 2. GYP_DEFINES 确保针对 macOS arm64 架构正确生成构建规则
-          export GYP_DEFINES="host_os=mac OS=mac"
-          make -j$(sysctl -n hw.ncpu) CXXFLAGS="-Wno-error -Wno-deprecated-declarations"
+          # 核心大招：
+          # 1. 屏蔽新版 Clang 把古老代码警告判为死刑的策略 (-Wno-error)
+          # 2. 屏蔽枚举常量转换等新编译器特有的严苛报错
+          export CC="clang"
+          export CXX="clang++"
+          make -j$(sysctl -n hw.ncpu) CXXFLAGS="-Wno-error -Wno-enum-constexpr-conversion -Wno-unused-private-field -Wno-nullability-completeness"
 
       - name: Package and Prepare Artifact
         run: |
@@ -39,11 +48,15 @@ jobs:
           mkdir -p dist-arm64
           make install DESTDIR=$(pwd)/dist-arm64
           
-          # 打包产物
+          # 检查编译出来的产物架构确认
+          echo "Verifying architecture of generated node binary:"
+          lipo -info dist-arm64/usr/local/bin/node
+          
+          # 打包压缩
           cd dist-arm64
           tar -czf ../../node-v14.21.3-darwin-arm64.tar.gz .
 
-      - name: Upload Artifact
+      - name: Upload Compiled Artifact
         uses: actions/upload-artifact@v4
         with:
           name: node-v14.21.3-darwin-arm64
