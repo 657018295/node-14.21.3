@@ -1,11 +1,11 @@
 name: Build Node 14 for Darwin ARM64
 
 on:
-  workflow_dispatch: # 支持手动触发
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-14 # 使用 GitHub 托管的 macOS ARM64 虚拟机 (Apple Silicon M1 虚拟机)
+    runs-on: macos-14 # 使用 macOS ARM64 虚拟机
 
     steps:
       - name: Checkout Repository
@@ -13,35 +13,33 @@ jobs:
 
       - name: Set up Environment & Download Node.js v14 Source
         run: |
-          NODE_VERSION="v14.21.3" # 选择 v14 的最后一个稳定版
+          NODE_VERSION="v14.21.3"
           echo "Downloading Node.js $NODE_VERSION..."
           curl -O https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION.tar.gz
           tar -xzf node-$NODE_VERSION.tar.gz
-          cd node-$NODE_VERSION
-          
-          # 针对现代 Clang / macOS SDK 的兼容性微调（视编译报错情况而定，通常 v14 在 arm64 下直接配可能会遇到 V8 或 gyp 的宏定义报错）
-          # 如果遇到编译错误，可以在这里通过 sed 替换或打补丁
 
       - name: Configure Node.js
         run: |
           cd node-v14.21.3
-          # 显式指定目标架构为 arm64
-          ./configure --dest-cpu=arm64 --without-npm # 如果不需要自带的旧 npm 可以加 --without-npm 后面自行安最新版
+          # 使用原生 arm64 配置，并关闭 npm（减少不必要的编译耗时和潜在错误）
+          ./configure --dest-cpu=arm64 --without-npm
 
-      - name: Build Node.js (Make)
+      - name: Build Node.js (Make with Compatibility Flags)
         run: |
           cd node-v14.21.3
-          # 使用所有可用的 CPU 核心加速编译
-          make -j$(sysctl -n hw.ncpu)
+          # 核心修复：
+          # 1. CXXFLAGS="-Wno-error" 阻止 Clang 把古老代码的警告判为死刑
+          # 2. GYP_DEFINES 确保针对 macOS arm64 架构正确生成构建规则
+          export GYP_DEFINES="host_os=mac OS=mac"
+          make -j$(sysctl -n hw.ncpu) CXXFLAGS="-Wno-error -Wno-deprecated-declarations"
 
       - name: Package and Prepare Artifact
         run: |
           cd node-v14.21.3
-          # 创建一个归档文件夹用于打包
           mkdir -p dist-arm64
           make install DESTDIR=$(pwd)/dist-arm64
           
-          # 压缩编译好的产物
+          # 打包产物
           cd dist-arm64
           tar -czf ../../node-v14.21.3-darwin-arm64.tar.gz .
 
